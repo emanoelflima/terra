@@ -1,0 +1,111 @@
+#include "/home/terra/TerraNG/terra/TerraNet.defs"
+
+var ushort nodeId = getNodeId();
+pktype usrMsg from radioMsg with
+	var ubyte[4] d8;
+	var ushort[4] d16;
+	var ulong[2]  d32;
+end
+
+var ushort pai;
+var usrMsg sndData;
+var usrMsg recData;
+var usrMsg qData;
+sndData.type=1;
+sndData.target = BROADCAST;
+sndData.source = nodeId;
+pai = 0;
+sndData.d16[1] = 0;
+sndData.d16[2] = 0;
+
+var ubyte stat;
+var ushort delay = 0;
+var ushort resendCounter;
+
+//broadcast : usa o led 0
+if nodeId == 11 then
+	pai = 1;
+	emit LED0(ON);
+	sndData.type = 1;
+	emit SEND(sndData);
+	await SEND_DONE;
+	emit LED0(OFF);
+else
+	//recebe o broadcast para determinar o pai
+	emit LED0(ON);
+	recData = await RECEIVE;			
+	emit LED0(OFF);
+	if recData.type == 1 then
+		if pai == 0 then
+			pai = recData.source;
+			delay = recData.d16[2] + 100;
+		end
+	end
+	//emite o broadcast para os nós adjacentes
+	sndData.target = BROADCAST;
+	sndData.type = 1;
+	sndData.d16[2] = delay;
+	//emit LED0(ON);
+	emit SEND(sndData);
+	await SEND_DONE;
+	//emit LED0(OFF);
+end
+
+//envia a própria temperatura para o pai : usa o led 1
+par do
+	loop do
+		await (500 + delay)ms;
+		emit LED1(ON);
+		emit REQ_TEMP();
+		emit LED1(OFF);			
+		sndData.d16[0] = await TEMP;
+		sndData.target = pai;
+		sndData.type = 2;
+		inc sndData.d16[1];	
+		emit LED1(ON);
+		qPut(sndData);		
+		emit LED1(OFF);
+	end
+//repassa a temperatura de um filho para seu pai : usa o led2
+with
+	loop do
+		//emit LED2(ON);	
+		recData = await RECEIVE;
+		emit LED2(OFF);
+		if recData.type == 2 then
+			recData.target = pai;
+			emit LED2(ON);
+			qPut(recData);
+			emit LED2(OFF);
+		end
+	end
+//envia as mensagens da fila
+with
+	loop do
+		await Q_READY;
+		loop do
+			if qSize() > 0 then
+				qGet(qData);
+				emit SEND_ACK(qData);
+				stat = await SEND_DONE_ACK;
+				resendCounter = 0;
+				loop do
+					if stat == FALSE then
+						inc resendCounter;
+						if resendCounter <= 3 then
+							emit SEND_ACK(qData);
+							stat = await SEND_DONE_ACK;
+						else
+							break;
+						end
+					else
+						break;
+					end
+				end
+			else
+				break;
+			end
+			await 50ms;
+		end
+	end
+end
